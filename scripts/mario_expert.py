@@ -9,10 +9,13 @@ Original Mario Manual: https://www.thegameisafootarcade.com/wp-content/uploads/2
 import json
 import logging
 import random
+import time
+from enum import Enum
 
 import cv2
 from mario_environment import MarioEnvironment
 from pyboy.utils import WindowEvent
+import numpy as np
 
 
 class MarioController(MarioEnvironment):
@@ -63,7 +66,7 @@ class MarioController(MarioEnvironment):
         self.valid_actions = valid_actions
         self.release_button = release_button
 
-    def run_action(self, action: int) -> None:
+    def run_action(self, actions: list[int], duration: int) -> None:
         """
         This is a very basic example of how this function could be implemented
 
@@ -73,13 +76,41 @@ class MarioController(MarioEnvironment):
         """
 
         # Simply toggles the buttons being on or off for a duration of act_freq
-        self.pyboy.send_input(self.valid_actions[action])
+        for action in actions:
+            self.pyboy.send_input(self.valid_actions[action.value])
 
-        for _ in range(self.act_freq):
+        for _ in range(duration):
             self.pyboy.tick()
 
-        self.pyboy.send_input(self.release_button[action])
+        for action in actions:
+            self.pyboy.send_input(self.release_button[action.value])
 
+
+
+class Action(Enum):
+    DOWN =      0
+    LEFT =      1
+    RIGHT =     2
+    UP =        3
+    A =         4
+    B =         5
+
+class Size(Enum):
+    ONExONE = 1
+    TWOxTWO = 4
+
+# Game Area Objects
+class GAO(Enum):
+    EMPTY =         (0, Size.ONExONE)
+    MARIO =         (1, Size.TWOxTWO)
+    MUSHROOM =      (6, Size.ONExONE)
+    EMPTY_BLOCK =   (10, Size.ONExONE)
+    BLOCK =         (13, Size.ONExONE)
+    PIPE =          (14, Size.TWOxTWO)
+    E_MUSHY =       (15, Size.ONExONE)
+    E_GOOMBA =       (16, Size.ONExONE)
+
+ACTION_SPEED = 10
 
 class MarioExpert:
     """
@@ -101,14 +132,138 @@ class MarioExpert:
 
         self.video = None
 
-    def choose_action(self):
+        self.previous_mario_pos = (0, 0)
+        self.previous_actions = None
+        self.previous_state = None
+        self.frame_count = 0
+        self.velocity = 0
+        self.action_speed = ACTION_SPEED
+
+
+    @staticmethod
+    def get_position(game_area, id: GAO) -> list[(int, int)]:
+        id = id.value if isinstance(id, GAO) else id
+        size = id[1]
+        id = id[0]
+        entities = np.where(game_area == id)
+        entities = list(zip(entities[1], entities[0]))
+        
+        cleaned_entities = []
+        for i in range(0, len(entities), size.value):
+            cleaned_entities.append(entities[i])
+
+        if cleaned_entities:
+            return cleaned_entities
+        return None
+
+    @staticmethod
+    def get_area(game_area, mario_pos, x, y) -> list:
+        return game_area[mario_pos[1] - y: mario_pos[1] + 2, mario_pos[0]: mario_pos[0] + x]
+
+    @staticmethod
+    def clamp(n, smallest, largest): 
+        return max(smallest, min(n, largest))
+
+    def actionier(self):
         state = self.environment.game_state()
         frame = self.environment.grab_frame()
         game_area = self.environment.game_area()
+        self.action_speed = ACTION_SPEED
 
-        # Implement your code here to choose the best action
-        # time.sleep(0.1)
-        return random.randint(0, len(self.environment.valid_actions) - 1)
+        mario_pos = self.get_position(game_area, GAO.MARIO)
+        mario_pos = mario_pos[0] if mario_pos else self.previous_mario_pos
+
+        pipes_pos = self.get_position(game_area, GAO.PIPE)
+        closest_pipe_greater_than_mario = lambda pipe_pos: pipe_pos[0] > mario_pos[0]
+        closest_pipe = list(filter(closest_pipe_greater_than_mario, pipes_pos)) if pipes_pos else None
+        closest_pipe = closest_pipe[0] if closest_pipe else None
+
+        actions = []
+
+        if self.previous_actions is None:
+            return mario_pos, actions
+        
+        self.velocity = np.subtract(state["x_position"], self.previous_state["x_position"])
+        print(f"Velocity: {self.velocity}")
+
+        enemy_area =            self.get_area(game_area, mario_pos, 9, 3)
+        very_close_enemy_area = self.get_area(game_area, mario_pos, 4, 3)
+        loot_area =             self.get_area(game_area, mario_pos, 2, 4)
+        obstacle_area =         self.get_area(game_area, mario_pos, 9, 3)
+        multi_area =            self.get_area(game_area, mario_pos, 11, 4)
+        floor_area =            game_area[mario_pos[1] - 2: mario_pos[1] + 3, mario_pos[0]: mario_pos[0] + 4]
+
+        oia = lambda area, id: id.value[0] in area
+        coia = lambda area, id: len(np.where(area == id.value[0])[0])
+
+        # Enemies
+        if False:
+            pass
+        elif oia(enemy_area, GAO.E_MUSHY) and oia(loot_area, GAO.BLOCK):
+            # actions.append(Action.DOWN)
+            if self.velocity != 0:
+                actions.append(Action.LEFT)
+            if oia(very_close_enemy_area, GAO.E_MUSHY):
+                actions.append(Action.A)
+            # actions.append(Action.A)
+            return mario_pos, actions
+        elif oia(enemy_area, GAO.E_MUSHY) or oia(enemy_area, GAO.E_GOOMBA):
+            actions.append(Action.RIGHT)
+            actions.append(Action.A)
+            return mario_pos, actions
+
+        # Looting
+        if False:
+            pass
+        elif oia(loot_area, GAO.BLOCK) and self.velocity == 0:
+            actions.append(Action.A)
+            return mario_pos, actions
+        elif oia(loot_area, GAO.BLOCK) and self.velocity != 0:
+            actions.append(Action.LEFT)
+            return mario_pos, actions
+        elif oia(loot_area, GAO.MUSHROOM):
+            actions.append(Action.LEFT)
+            # actions.append(Action.A)
+            return mario_pos, actions
+
+        # Pipes
+        actions.append(Action.RIGHT)
+        if False:
+            pass
+        elif oia(obstacle_area, GAO.PIPE) and coia(obstacle_area, GAO.PIPE) >= 8:
+            actions.append(Action.A)
+            self.action_speed = 12
+            return mario_pos, actions
+        elif oia(obstacle_area, GAO.PIPE):
+            actions.append(Action.A)
+            return mario_pos, actions
+        elif GAO.EMPTY in floor_area[4] and not oia(obstacle_area, GAO.EMPTY_BLOCK):
+            actions.append(Action.A)
+            return mario_pos, actions
+        elif oia(obstacle_area, GAO.EMPTY_BLOCK):
+            actions.append(Action.A)
+
+        return mario_pos, actions
+
+    def choose_action(self):
+        mario_pos, actions = self.actionier()
+
+        # if actions contain the same action as the previous frame, don't do anything
+        if self.previous_actions is not None:
+            if actions == self.previous_actions:
+                actions = [Action.RIGHT, Action.UP]
+
+        self.previous_mario_pos = mario_pos
+        self.previous_actions = actions
+        self.previous_state = self.environment.game_state()
+
+        print(f"Frame: {self.frame_count}")
+        c = 0
+        if self.frame_count > c:
+            time.sleep(0.2)
+
+        # return random.randint(0, len(self.environment.valid_actions) - 1)
+        return actions
 
     def step(self):
         """
@@ -116,12 +271,17 @@ class MarioExpert:
 
         This is just a very basic example
         """
-
         # Choose an action - button press or other...
-        action = self.choose_action()
+        actions = self.choose_action()
 
-        # Run the action on the environment
-        self.environment.run_action(action)
+        # Run the action on the environment908-
+        self.environment.run_action(actions, self.action_speed)
+
+        self.frame_count += 1
+
+
+
+
 
     def play(self):
         """
