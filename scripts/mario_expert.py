@@ -108,7 +108,8 @@ class GAO(Enum):
     BLOCK =         (13, Size.ONExONE)
     PIPE =          (14, Size.TWOxTWO)
     E_MUSHY =       (15, Size.ONExONE)
-    E_GOOMBA =       (16, Size.ONExONE)
+    E_GOOMBA =      (16, Size.ONExONE)
+    E_BUZZBEE =     (18, Size.ONExONE)
 
 ACTION_SPEED = 10
 
@@ -138,6 +139,8 @@ class MarioExpert:
         self.frame_count = 0
         self.velocity = 0
         self.action_speed = ACTION_SPEED
+        self.velocities = []
+        self.serial_actions = []
 
 
     @staticmethod
@@ -184,6 +187,7 @@ class MarioExpert:
             return mario_pos, actions
         
         self.velocity = np.subtract(state["x_position"], self.previous_state["x_position"])
+        self.velocities.append(self.velocity)
         print(f"Velocity: {self.velocity}")
 
         enemy_area =            self.get_area(game_area, mario_pos, 9, 3)
@@ -192,25 +196,50 @@ class MarioExpert:
         obstacle_area =         self.get_area(game_area, mario_pos, 9, 3)
         multi_area =            self.get_area(game_area, mario_pos, 11, 4)
         floor_area =            game_area[mario_pos[1] - 2: mario_pos[1] + 3, mario_pos[0]: mario_pos[0] + 4]
+        below_area =            game_area[mario_pos[1] - 2: mario_pos[1] + 4, mario_pos[0]: mario_pos[0] + 5]
 
         oia = lambda area, id: id.value[0] in area
         coia = lambda area, id: len(np.where(area == id.value[0])[0])
+
+        if len(self.velocities) > 5:
+            c = [-1, 1, -1, 1, -1, 1, -1, 1, -1, 1]
+            if c == self.velocities[-len(c):]:
+                actions.append(Action.RIGHT)
+                return mario_pos, actions
+            c = [0, 0, 0, 0, 0]
+            if c == self.velocities[-len(c):]:
+                self.serial_actions.append(Action.LEFT)
+                self.serial_actions.append(Action.LEFT)
+                self.serial_actions.append(Action.LEFT)
+                self.serial_actions.append(Action.LEFT)
+                self.serial_actions.append(Action.LEFT)
+            if state["stage"] != 1:
+                self.serial_actions = []
+            
+        print(f"Time: {state['time']}")
 
         # Enemies
         if False:
             pass
         elif oia(enemy_area, GAO.E_MUSHY) and oia(loot_area, GAO.BLOCK):
-            # actions.append(Action.DOWN)
             if self.velocity != 0:
                 actions.append(Action.LEFT)
             if oia(very_close_enemy_area, GAO.E_MUSHY):
                 actions.append(Action.A)
-            # actions.append(Action.A)
             return mario_pos, actions
-        elif oia(enemy_area, GAO.E_MUSHY) or oia(enemy_area, GAO.E_GOOMBA):
+        elif oia(enemy_area, GAO.E_MUSHY) or oia(enemy_area, GAO.E_GOOMBA) or oia(enemy_area, GAO.E_BUZZBEE):
             actions.append(Action.RIGHT)
             actions.append(Action.A)
             return mario_pos, actions
+        elif state["time"] == 312:
+            actions.append(Action.LEFT)
+        elif len(below_area) == 0:
+            actions.append(Action.RIGHT)
+            return mario_pos, actions
+        if len(below_area) == 6:
+            if GAO.E_MUSHY.value[0] == below_area[5][3]:
+                actions.append(Action.LEFT)
+                return mario_pos, actions
 
         # Looting
         if False:
@@ -223,13 +252,12 @@ class MarioExpert:
             return mario_pos, actions
         elif oia(loot_area, GAO.MUSHROOM):
             actions.append(Action.LEFT)
-            # actions.append(Action.A)
             return mario_pos, actions
 
         # Pipes
         actions.append(Action.RIGHT)
-        if False:
-            pass
+        if len(floor_area) == 0:
+            return mario_pos, actions
         elif oia(obstacle_area, GAO.PIPE) and coia(obstacle_area, GAO.PIPE) >= 8:
             actions.append(Action.A)
             self.action_speed = 12
@@ -237,10 +265,10 @@ class MarioExpert:
         elif oia(obstacle_area, GAO.PIPE):
             actions.append(Action.A)
             return mario_pos, actions
-        elif GAO.EMPTY in floor_area[4] and not oia(obstacle_area, GAO.EMPTY_BLOCK):
+        elif GAO.EMPTY.value[0] in floor_area[4]:
             actions.append(Action.A)
             return mario_pos, actions
-        elif oia(obstacle_area, GAO.EMPTY_BLOCK):
+        elif oia(obstacle_area, GAO.EMPTY_BLOCK) and GAO.EMPTY_BLOCK.value[0] != obstacle_area[1][0]:
             actions.append(Action.A)
 
         return mario_pos, actions
@@ -248,10 +276,13 @@ class MarioExpert:
     def choose_action(self):
         mario_pos, actions = self.actionier()
 
-        # if actions contain the same action as the previous frame, don't do anything
-        if self.previous_actions is not None:
-            if actions == self.previous_actions:
-                actions = [Action.RIGHT, Action.UP]
+        if len(self.serial_actions) > 0:
+            actions = [self.serial_actions.pop(0)]
+        else:
+            # if actions contain the same action as the previous frame, don't do anything
+            if self.previous_actions is not None:
+                if actions == self.previous_actions:
+                    actions = [Action.RIGHT, Action.UP]
 
         self.previous_mario_pos = mario_pos
         self.previous_actions = actions
@@ -260,7 +291,7 @@ class MarioExpert:
         print(f"Frame: {self.frame_count}")
         c = 0
         if self.frame_count > c:
-            time.sleep(0.2)
+            time.sleep(0.1)
 
         # return random.randint(0, len(self.environment.valid_actions) - 1)
         return actions
